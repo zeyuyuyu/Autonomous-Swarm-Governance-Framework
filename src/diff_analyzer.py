@@ -1,107 +1,113 @@
-"""Analyzes code diffs to determine impact and risk of changes."""
+#!/usr/bin/env python3
 
-from dataclasses import dataclass
-from typing import List, Dict, Optional
-import re
-
-@dataclass
-class DiffMetrics:
-    lines_added: int
-    lines_removed: int 
-    files_changed: int
-    risk_score: float
-    impacted_components: List[str]
+from typing import Dict, List, Tuple, Optional
+import difflib
+import json
 
 class DiffAnalyzer:
     def __init__(self):
-        self.high_risk_patterns = [
-            r'(?i)security',
-            r'(?i)authentication', 
-            r'(?i)authorization',
-            r'(?i)crypto',
-            r'(?i)password'
-        ]
-
-        self.core_components = [
-            'governance',
-            'consensus',
-            'networking',
-            'storage'
-        ]
-
-    def analyze_diff(self, diff_content: str) -> DiffMetrics:
-        """Analyzes a git diff and returns key metrics about the changes."""
-        lines_added = len(re.findall(r'\
-\\+[^+]', diff_content))
-        lines_removed = len(re.findall(r'\
--[^-]', diff_content))
-        files = set(re.findall(r'diff --git a/(.*?) b/', diff_content))
-
-        # Calculate risk score
-        risk_score = self._calculate_risk_score(diff_content)
-        
-        # Identify impacted components
-        impacted = self._identify_impacted_components(diff_content)
-
-        return DiffMetrics(
-            lines_added=lines_added,
-            lines_removed=lines_removed,
-            files_changed=len(files),
-            risk_score=risk_score,
-            impacted_components=impacted
-        )
-
-    def _calculate_risk_score(self, content: str) -> float:
-        """Calculate a risk score from 0-1 based on various factors."""
-        score = 0.0
-        
-        # Check for high risk patterns
-        for pattern in self.high_risk_patterns:
-            if re.search(pattern, content):
-                score += 0.2 # Each risk pattern adds 0.2
-                
-        # Factor in size of change
-        lines_changed = len(re.findall(r'\
-[+-][^+-]', content))
-        if lines_changed > 500:
-            score += 0.3
-        elif lines_changed > 100:
-            score += 0.1
-            
-        # Cap at 1.0
-        return min(1.0, score)
-
-    def _identify_impacted_components(self, content: str) -> List[str]:
-        """Identifies which core components are impacted by changes."""
-        impacted = []
-        for component in self.core_components:
-            if re.search(f'(?i){component}', content):
-                impacted.append(component)
-        return impacted
-
-    def get_review_recommendation(self, metrics: DiffMetrics) -> str:
-        """Provides a review recommendation based on diff metrics."""
-        if metrics.risk_score >= 0.7:
-            return 'HIGH_RISK: Requires senior review and security audit'
-        elif metrics.risk_score >= 0.4:
-            return 'MEDIUM_RISK: Requires standard peer review'
-        else:
-            return 'LOW_RISK: Standard review process'
-
-    def generate_impact_report(self, metrics: DiffMetrics) -> Dict:
-        """Generates a detailed impact report from the metrics."""
-        return {
-            'summary': {
-                'files_changed': metrics.files_changed,
-                'total_lines_changed': metrics.lines_added + metrics.lines_removed,
-                'risk_level': self.get_review_recommendation(metrics)
-            },
-            'risk_analysis': {
-                'risk_score': metrics.risk_score,
-                'impacted_components': metrics.impacted_components
-            },
-            'change_magnitude': {
-                'lines_added': metrics.lines_added,
-                'lines_removed': metrics.lines_removed
-            }
+        self.conflict_strategies = {
+            'merge': self._merge_changes,
+            'latest_wins': self._take_latest,
+            'consensus': self._reach_consensus
         }
+
+    def analyze_diffs(self, original: str, variants: List[str]) -> Tuple[str, Dict]:
+        """Analyze differences between original and multiple variant versions"""
+        diffs = []
+        conflict_zones = []
+
+        for variant in variants:
+            diff = list(difflib.ndiff(original.splitlines(), variant.splitlines()))
+            diffs.append(diff)
+            
+            # Identify conflict zones
+            conflicts = self._find_conflicts(diff)
+            if conflicts:
+                conflict_zones.extend(conflicts)
+
+        # Generate analysis report
+        report = {
+            'num_variants': len(variants),
+            'conflict_zones': conflict_zones,
+            'similarity_scores': self._calculate_similarities(original, variants),
+            'recommended_strategy': self._suggest_strategy(conflict_zones)
+        }
+
+        # Apply recommended resolution strategy
+        resolved = self._resolve_conflicts(original, variants, report['recommended_strategy'])
+
+        return resolved, report
+
+    def _find_conflicts(self, diff: List[str]) -> List[Dict]:
+        """Identify zones of conflict in diff"""
+        conflicts = []
+        current_conflict = None
+        
+        for i, line in enumerate(diff):
+            if line.startswith('- ') and i < len(diff)-1 and diff[i+1].startswith('+ '):
+                if not current_conflict:
+                    current_conflict = {
+                        'start_line': i,
+                        'changes': []
+                    }
+                current_conflict['changes'].append({
+                    'removed': line[2:],
+                    'added': diff[i+1][2:]
+                })
+            elif current_conflict and not line.startswith('?'):
+                current_conflict['end_line'] = i
+                conflicts.append(current_conflict)
+                current_conflict = None
+                
+        return conflicts
+
+    def _calculate_similarities(self, original: str, variants: List[str]) -> List[float]:
+        """Calculate similarity scores between original and variants"""
+        scores = []
+        for variant in variants:
+            matcher = difflib.SequenceMatcher(None, original, variant)
+            scores.append(round(matcher.ratio(), 3))
+        return scores
+
+    def _suggest_strategy(self, conflict_zones: List[Dict]) -> str:
+        """Suggest conflict resolution strategy based on analysis"""
+        if not conflict_zones:
+            return 'merge'
+        elif len(conflict_zones) > 5:
+            return 'consensus'
+        else:
+            return 'latest_wins'
+
+    def _resolve_conflicts(self, original: str, variants: List[str], strategy: str) -> str:
+        """Apply selected conflict resolution strategy"""
+        resolver = self.conflict_strategies.get(strategy, self._merge_changes)
+        return resolver(original, variants)
+
+    def _merge_changes(self, original: str, variants: List[str]) -> str:
+        """Merge non-conflicting changes"""
+        result = original
+        for variant in variants:
+            d = difflib.unified_diff(result.splitlines(), variant.splitlines())
+            # Apply non-conflicting changes
+            for line in d:
+                if line.startswith('+') and not any(l.startswith('-') for l in d):
+                    result += line[1:] + '\
+'
+        return result
+
+    def _take_latest(self, original: str, variants: List[str]) -> str:
+        """Take the latest version in conflicts"""
+        return variants[-1]
+
+    def _reach_consensus(self, original: str, variants: List[str]) -> str:
+        """Use most common version in conflicts"""
+        from collections import Counter
+        versions = [original] + variants
+        count = Counter(versions)
+        return count.most_common(1)[0][0]
+
+    def export_report(self, report: Dict, filepath: str) -> None:
+        """Export analysis report to JSON file"""
+        with open(filepath, 'w') as f:
+            json.dump(report, f, indent=2)
