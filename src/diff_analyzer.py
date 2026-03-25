@@ -1,112 +1,107 @@
+"""Analyzes code diffs to determine impact and risk of changes."""
+
+from dataclasses import dataclass
+from typing import List, Dict, Optional
 import re
-from typing import Dict, List, Tuple
+
+@dataclass
+class DiffMetrics:
+    lines_added: int
+    lines_removed: int 
+    files_changed: int
+    risk_score: float
+    impacted_components: List[str]
 
 class DiffAnalyzer:
     def __init__(self):
         self.high_risk_patterns = [
-            r'password',
-            r'secret',
-            r'token',
-            r'api[_]?key',
-            r'credential',
-            r'auth',
-        ]
-        
-        self.critical_file_patterns = [
-            r'.*dockerfile.*',
-            r'.*\.env.*',
-            r'.*/config/.*',
-            r'.*/settings/.*',
-            r'.*security.*',
-            r'.*auth.*'
+            r'(?i)security',
+            r'(?i)authentication', 
+            r'(?i)authorization',
+            r'(?i)crypto',
+            r'(?i)password'
         ]
 
-    def calculate_impact_score(self, diff_text: str, filepath: str) -> Tuple[float, List[str]]:
-        """
-        Analyzes a diff and returns an impact score (0-10) and list of concerns
-        """
+        self.core_components = [
+            'governance',
+            'consensus',
+            'networking',
+            'storage'
+        ]
+
+    def analyze_diff(self, diff_content: str) -> DiffMetrics:
+        """Analyzes a git diff and returns key metrics about the changes."""
+        lines_added = len(re.findall(r'\
+\\+[^+]', diff_content))
+        lines_removed = len(re.findall(r'\
+-[^-]', diff_content))
+        files = set(re.findall(r'diff --git a/(.*?) b/', diff_content))
+
+        # Calculate risk score
+        risk_score = self._calculate_risk_score(diff_content)
+        
+        # Identify impacted components
+        impacted = self._identify_impacted_components(diff_content)
+
+        return DiffMetrics(
+            lines_added=lines_added,
+            lines_removed=lines_removed,
+            files_changed=len(files),
+            risk_score=risk_score,
+            impacted_components=impacted
+        )
+
+    def _calculate_risk_score(self, content: str) -> float:
+        """Calculate a risk score from 0-1 based on various factors."""
         score = 0.0
-        concerns = []
-
-        # Check for critical file patterns
-        for pattern in self.critical_file_patterns:
-            if re.match(pattern, filepath.lower()):
-                score += 2.0
-                concerns.append(f'Critical file pattern match: {pattern}')
-                break
-
-        # Analyze diff content
-        lines = diff_text.split('\
-')
-        added_lines = [line[1:] for line in lines if line.startswith('+')]
-        removed_lines = [line[1:] for line in lines if line.startswith('-')]
-
-        # Check for sensitive patterns in added/removed lines
+        
+        # Check for high risk patterns
         for pattern in self.high_risk_patterns:
-            for line in added_lines:
-                if re.search(pattern, line.lower()):
-                    score += 3.0
-                    concerns.append(f'Added sensitive pattern: {pattern}')
-            for line in removed_lines:
-                if re.search(pattern, line.lower()):
-                    score += 2.0
-                    concerns.append(f'Removed sensitive pattern: {pattern}')
-
-        # Calculate complexity impact
-        complexity_score = min(3.0, (len(added_lines) + len(removed_lines)) / 50.0)
-        score += complexity_score
-        
-        if complexity_score > 1.5:
-            concerns.append('High complexity changes detected')
-
-        # Cap final score at 10
-        score = min(10.0, score)
-        
-        return score, concerns
-
-    def highlight_critical_diffs(self, diff_text: str) -> Dict[int, str]:
-        """
-        Returns a mapping of line numbers to highlighted concerns in the diff
-        """
-        highlights = {}
-        lines = diff_text.split('\
-')
-        
-        for idx, line in enumerate(lines, 1):
-            if not line.startswith(('+', '-')):
-                continue
+            if re.search(pattern, content):
+                score += 0.2 # Each risk pattern adds 0.2
                 
-            content = line[1:]
-            matches = []
+        # Factor in size of change
+        lines_changed = len(re.findall(r'\
+[+-][^+-]', content))
+        if lines_changed > 500:
+            score += 0.3
+        elif lines_changed > 100:
+            score += 0.1
             
-            # Check for sensitive patterns
-            for pattern in self.high_risk_patterns:
-                if re.search(pattern, content.lower()):
-                    matches.append(f'Contains sensitive pattern: {pattern}')
-            
-            # Check for potentially dangerous code patterns
-            if re.search(r'exec\\s*\\(', content):
-                matches.append('Contains code execution')
-            if re.search(r'eval\\s*\\(', content):
-                matches.append('Contains eval statement')
-            if re.search(r'subprocess', content):
-                matches.append('Contains subprocess usage')
-            
-            if matches:
-                highlights[idx] = ' | '.join(matches)
-        
-        return highlights
+        # Cap at 1.0
+        return min(1.0, score)
 
-    def analyze_diff(self, diff_text: str, filepath: str) -> Dict:
-        """
-        Performs comprehensive diff analysis and returns results
-        """
-        impact_score, concerns = self.calculate_impact_score(diff_text, filepath)
-        highlights = self.highlight_critical_diffs(diff_text)
-        
+    def _identify_impacted_components(self, content: str) -> List[str]:
+        """Identifies which core components are impacted by changes."""
+        impacted = []
+        for component in self.core_components:
+            if re.search(f'(?i){component}', content):
+                impacted.append(component)
+        return impacted
+
+    def get_review_recommendation(self, metrics: DiffMetrics) -> str:
+        """Provides a review recommendation based on diff metrics."""
+        if metrics.risk_score >= 0.7:
+            return 'HIGH_RISK: Requires senior review and security audit'
+        elif metrics.risk_score >= 0.4:
+            return 'MEDIUM_RISK: Requires standard peer review'
+        else:
+            return 'LOW_RISK: Standard review process'
+
+    def generate_impact_report(self, metrics: DiffMetrics) -> Dict:
+        """Generates a detailed impact report from the metrics."""
         return {
-            'impact_score': impact_score,
-            'risk_level': 'HIGH' if impact_score >= 7 else 'MEDIUM' if impact_score >= 4 else 'LOW',
-            'concerns': concerns,
-            'highlights': highlights
+            'summary': {
+                'files_changed': metrics.files_changed,
+                'total_lines_changed': metrics.lines_added + metrics.lines_removed,
+                'risk_level': self.get_review_recommendation(metrics)
+            },
+            'risk_analysis': {
+                'risk_score': metrics.risk_score,
+                'impacted_components': metrics.impacted_components
+            },
+            'change_magnitude': {
+                'lines_added': metrics.lines_added,
+                'lines_removed': metrics.lines_removed
+            }
         }
